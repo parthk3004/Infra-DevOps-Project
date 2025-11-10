@@ -1,0 +1,17 @@
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+# sqlalchemy
+# psycopg2-binary # For PostgreSQL
+# pymysql       # For MySQL
+
+python-dotenv==1.0.1
+pydantic==2.5.2
+pydantic-settings==2.1.0 # Good for managing settings
+requests==2.31.0
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9 # PostgreSQL driver
+redis==5.0.1 # For Redis client
+# For structured logging, consider:
+# structlog==23.2.0
+
+#Poetry files for managing python deployment
