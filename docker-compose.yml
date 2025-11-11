@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  nginx:
+    image: nginx:1.25.3-alpine
+    container_name: dcs_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - app
+    networks:
+      - dcs_backend_network
+      - dcs_frontend_network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: '128M'
+        reservations:
+          cpus: '0.2'
+          memory: '64M'
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UID: 10001
+    container_name: dcs_app
+    environment:
+      DATABASE_URL: postgresql://user:password@db:5432/datacollection
+      LOG_LEVEL: INFO
+      SECRET_KEY: ${SECRET_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - dcs_backend_network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "10"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: '512M'
+        reservations:
+          cpus: '0.5'
+          memory: '256M'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  db:
+    image: postgres:15-alpine
+    container_name: dcs_db
+    environment:
+      POSTGRES_DB: datacollection
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    volumes:
+      - dcs_pgdata:/var/lib/postgresql/data
+      - ./db_init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - dcs_backend_network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: '256M'
+        reservations:
+          cpus: '0.2'
+          memory: '128M'
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d datacollection"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  dcs_pgdata:
+    driver: local
+
+networks:
+  dcs_backend_network:
+    driver: MACVLAN
+  dcs_frontend_network:
+    driver: bridge
