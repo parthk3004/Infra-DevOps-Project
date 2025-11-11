@@ -1,0 +1,235 @@
+#deploy strategy workflow for trigger when file push on main branch
+name: Data Collection Service CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - Release/Infra-Project
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Select deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      release_version:
+        required: false
+        type: string
+
+env:
+  DOCKER_IMAGE_NAME: datacollection-service
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'poetry'
+
+      - name: Install poetry
+        run: pip install poetry
+
+      - name: Install dependencies
+        run: poetry install --no-root --no-dev --no-interaction
+
+      - name: Run Linting (Pylint & Flake8)
+        run: |
+          poetry run pylint app/
+          poetry run flake8 app/
+
+      - name: Run Unit Tests with Coverage
+        run: |
+          poetry run pytest --cov=app --cov-report=xml
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: https://github.com/parthk3004/Infra-DevOps-Project
+
+      - name: Log in to Docker Hub (or other registry)
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}
+            ${{ secrets.AWS_ECR_REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }} # Example for ECR
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha,format=short
+
+      - name: Build and Push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha 
+          cache-to: type=gha,mode=max
+
+      - name: Scan Docker image for vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ steps.meta.outputs.version }} # Use a specific tag
+          format: 'table'
+          exit-code: '1' # Fail - if vulnerabilities are found
+          severity: 'HIGH,CRITICAL'
+          vuln-type: 'os,library'
+      
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+           sarif_file: 'trivy-results.sarif'
+
+  deploy_staging:
+    needs: build_and_test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    environment:
+      name: Staging
+      url: https://staging.yourcompany.com/datacollection
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH for Staging Deployment
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+
+      - name: Configure SSH known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan ${{ secrets.STAGING_HOST_IP }} >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy to Staging Environment
+        env:
+          TARGET_HOST: ${{ secrets.STAGING_HOST_IP }}
+          TARGET_USER: ${{ secrets.STAGING_SSH_USER }}
+          IMAGE_TAG: ${{ needs.build_and_test.outputs.image_tag }} # Get the tagged image from build job
+        run: |
+          echo "Deploying version ${{ env.IMAGE_TAG }} to staging..."
+          ssh $TARGET_USER@$TARGET_HOST "cd /opt/datacollection-service && \
+            git pull origin main && \
+            export DOCKER_IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+            sudo ./scripts/setup-environment.sh --deploy --environment staging"
+          echo "Staging deployment initiated."
+
+      - name: Run Smoke Tests on Staging
+        # hitting the /health endpoint
+        run: |
+          echo "Running smoke tests on staging..."
+          curl -f https://staging.locakhost.com:8000/datacollection/health || (echo "Staging smoke test failed!" && exit 1)
+          echo "Staging smoke tests passed."
+
+  deploy_production:
+    needs: deploy_staging
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'
+    environment:
+      name: Production
+      url: https://prod.localhost.com:8000/datacollection
+    steps:
+      - name: Manual Approval for Production Deployment
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ github.TOKEN }}
+          approvers: ${{ secrets.PROD_APPROVERS_TEAM }} 
+          minimum-approvals: 1
+          
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH for Production Deployment
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+
+      - name: Configure SSH known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan ${{ secrets.PROD_HOST_IP_PRIMARY }} >> ~/.ssh/known_hosts
+          ssh-keyscan ${{ secrets.PROD_HOST_IP_SECONDARY }} >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy to Production (Blue/Green Strategy)
+        env:
+          TARGET_HOST_PRIMARY: ${{ secrets.PROD_HOST_IP_PRIMARY }} # Current active environment
+          TARGET_HOST_SECONDARY: ${{ secrets.PROD_HOST_IP_SECONDARY }} # New environment
+          TARGET_USER: ${{ secrets.PROD_SSH_USER }}
+          IMAGE_TAG: ${{ needs.build_and_test.outputs.image_tag }} # Use the same image from build job
+          RELEASE_VERSION: ${{ github.event.inputs.release_version }} # Manual input
+        run: |
+          echo "Starting Blue/Green deployment for release ${{ env.RELEASE_VERSION }}..."
+          echo "Deploying to Green environment (${TARGET_HOST_SECONDARY})..."
+          ssh $TARGET_USER@$TARGET_HOST_SECONDARY "cd /opt/datacollection-service && \
+            git pull origin main && \
+            export DOCKER_IMAGE_TAG=${{ env.IMAGE_TAG }} && \
+            sudo ./scripts/setup-environment.sh --deploy --environment production --strategy green"
+          echo "Green environment deployment initiated. Waiting for services to be healthy..."
+
+          echo "Running pre-switch smoke tests on Green environment..."
+
+          curl -f https://internal-green.prod.yourcompany.com/datacollection/health || (echo "Green smoke test failed!" && exit 1)
+          echo "Pre-switch smoke tests on Green passed."
+
+          echo "Manual action required: Switch traffic to Green environment (${TARGET_HOST_SECONDARY})."
+          echo "Waiting for traffic switch confirmation (simulate 60s delay)..."
+          sleep 60 # Simulate waiting for manual switch or external automation
+
+          echo "Validating traffic switch and running post-switch tests..."
+
+          curl -f https://prod.yourcompany.com/datacollection/health || (echo "Production traffic validation failed!" && exit 1)
+          echo "Production traffic validated."
+
+          # Post-deployment: Notify and optionally prepare for rollback
+          echo "Deployment to production for release ${{ env.RELEASE_VERSION }} successful!"
+
+      - name: Send Deployment Notification
+        if: success() || failure()
+        uses: techulus/telegram-action@v2
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            Data Collection Service Deployment Notification
+            **Environment:** Production
+            **Status:** ${{ job.status }}
+            **Version:** ${{ github.event.inputs.release_version || 'N/A' }}
+            **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            **Commit:** ${{ github.sha }}
+      
+      # Manual Rollback Mechanism 
+      - name: Rollback Instructions (Manual)
+        if: failure()
+        run: |
+          echo "--------------------------------------------------------------------------------"
+          echo " Production Deployment FAILED. Initiate Manual Rollback if necessary. "
+          echo "To rollback, switch traffic back to the previous 'Blue' environment "
+          echo "(e.g., via DNS/VIP change or running a rollback script on the management server)."
+          echo "Ensure previous image tag is known and deployed to the fallback host."
+          echo "--------------------------------------------------------------------------------"
