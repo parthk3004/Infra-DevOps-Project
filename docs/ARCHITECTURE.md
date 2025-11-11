@@ -13,3 +13,15 @@ Security & Compliance: High emphasis on data protection, access control, auditin
 
 HLD -
 ![unnamed](https://github.com/user-attachments/assets/83016ab7-8a6d-471a-9cb4-8491d100ca81)
+
+
+The DCS is deployed on a dedicated Virtual Machine (VM) provisioned on the client's existing virtualization platform (e.g., VMware vSphere, Microsoft Hyper-V).
+
+Host VM: A Linux-based VM (e.g., Ubuntu, RHEL) running Docker Engine and Docker Compose. This VM acts as the host for all DCS containers.
+Resource Allocation: VM resources (CPU, RAM, Storage) are allocated based on expected data volume and processing requirements, with the ability to scale vertically as needed.
+Base Image: VMs are provisioned from a hardened, pre-approved client image, potentially pre-installed with Docker.
+Orchestration: Docker Compose manages the lifecycle (start, stop, restart, health checks) of the multi-container DCS application stack.
+
+
+
+
