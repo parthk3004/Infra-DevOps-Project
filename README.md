@@ -21,3 +21,10 @@ This project is for self learning and evaluation where it will help to create a 
    ├── docker-compose.yml
    └── README.md
    ```
+
+Docker File -
+Multi-stage Build: We use 2 stage first is to build with base image of python 3.11 and integrate it with dependencies into a virtual environment (.venv). This stage is optimized for caching known as Builder stage. Second is Final stage use to copies the built virtual environment and the application code reducing the size of image and implementing all the required libraries only where build tools and dev dependencies are excluded.
+
+Note - OCI (Open Container Initiative) compliant labels are added for better metadata and discoverability.
+
+
