@@ -23,5 +23,36 @@ Base Image: VMs are provisioned from a hardened, pre-approved client image, pote
 Orchestration: Docker Compose manages the lifecycle (start, stop, restart, health checks) of the multi-container DCS application stack.
 
 
+Component                             Technology
+Containerization	                    Docker
+Container Orchestration	              Docker Compose
+Application Framework	                FastAPI (Python)
+Reverse Proxy                    	    Nginx
+Database	                            PostgreSQL
+ORM	                                  SQLAlchemy
+Logging	                              Structured JSON Logs (Python logging + custom formatter)
+CI/CD	                                GitHub Actions
+Configuration Management      	      Bash Script (setup-environment.sh)
+Infrastructure Provisioning     	    Terraform (for vSphere/Hyper-V)
+Vulnerability Scanning	              Trivy
 
+
+Maintenance:
+
+Scheduled patching for Host OS and Docker.
+Database maintenance (vacuuming, indexing).
+Application updates via CI/CD pipeline.
+
+Logging: 
+Centralized JSON logging, critical for remote diagnosis. Log retention policies are defined.
+
+Backup & Restore: 
+PostgreSQL data volumes (dcs_pgdata) are backed up regularly (e.g., VM snapshots, logical backups).
+
+Rollback Strategy: 
+Defined procedures for reverting to a previous stable deployment version (e.g., via Blue/Green traffic switch, or redeploying a previous Docker image tag).
+
+
+Troubleshooting: 
+Comprehensive TROUBLESHOOTING.md (separate document) provides detailed runbooks and diagnostic steps.
 
